@@ -1,12 +1,30 @@
+# Python
 venv/
-.env
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+
+# Environment secrets — NEVER commit
+.env
+
+# Streamlit secrets
+.streamlit/secrets.toml
+
+# Database files (old SQLite — now using MongoDB)
+prescriptions.db
+
+# Temp audio, PDF, OAuth verifier cache
 temp/
 *.wav
 *.mp3
 *.m4a
 *.pdf
-.streamlit/secrets.toml
+
+# OS
 .DS_Store
 Thumbs.db
+
+# IDE
+.vscode/
+.idea/

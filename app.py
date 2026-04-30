@@ -1,372 +1,189 @@
-import json
 import streamlit as st
+from auth import (
+    is_authenticated,
+    get_google_auth_url,
+    handle_oauth_callback,
+    logout,
+)
 
-from stt import save_audio_file, transcribe_audio
-from llm_extract import extract_medical_json
-from validator import validate_medicines
-from fhir_builder import build_fhir_prescription
-from pdf_generator import create_prescription_pdf
-
-
+# ─── Page config (ONLY called here — not in any page file) ───────────────────
 st.set_page_config(
     page_title="VoiceRx Sync",
     page_icon="🩺",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
-
-st.markdown(
-    """
-    <style>
-    .block-container {
-        padding-top: 2rem;
-    }
-
-    .hero-card {
-        background: linear-gradient(135deg, #e0f2fe 0%, #dcfce7 100%);
-        padding: 1.5rem;
-        border-radius: 22px;
-        border: 1px solid #dbeafe;
-        margin-bottom: 1rem;
-    }
-
-    .metric-card {
-        background: white;
-        padding: 1rem;
-        border-radius: 16px;
-        border: 1px solid #e5e7eb;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.04);
-    }
-
-    .small-text {
-        font-size: 0.9rem;
-        color: #64748b;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
-
-
-def initialize_session_state():
-    defaults = {
-        "transcript": "",
-        "medical_json": None,
-        "final_data": None,
-        "fhir_json": None,
-        "pdf_path": None,
-    }
-
-    for key, value in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = value
-
-
-def get_safe_age(value):
-    try:
-        if value is None:
-            return 0
-        return int(value)
-    except Exception:
-        return 0
-
-
-initialize_session_state()
-
-
-with st.sidebar:
-    st.title("🩺 VoiceRx Sync")
-    st.caption("Doctor voice to digital prescription")
-
-    st.divider()
-
-    st.subheader("Workflow")
-    st.write("1. Record doctor voice")
-    st.write("2. Convert speech to text")
-    st.write("3. Extract prescription JSON")
-    st.write("4. Validate medicine dose")
-    st.write("5. Generate PDF + FHIR JSON")
-
-    st.divider()
-
-    st.subheader("Demo Sentence")
-    st.info(
-        "Ramu, age 25, symptoms of headache and fever. "
-        "Give him Paracetamol 500mg twice a day for three days."
-    )
-
-    st.subheader("Overdose Test")
-    st.warning(
-        "Try: Ramu has fever. Give Paracetamol 5000mg twice a day."
-    )
-
-    st.divider()
-
-    st.caption(
-        "Safety: This is a clinical documentation assistant, "
-        "not an autonomous prescribing system."
-    )
-
-
-st.markdown(
-    """
-    <div class="hero-card">
-        <h1>🩺 VoiceRx Sync</h1>
-        <p>
-        Convert doctor voice notes into structured, validated, editable,
-        FHIR-style digital prescriptions.
-        </p>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
-
-
-m1, m2, m3 = st.columns(3)
-
-with m1:
-    st.markdown(
-        """
-        <div class="metric-card">
-            <h3>🎙️ Voice Input</h3>
-            <p class="small-text">Doctor speaks naturally.</p>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-with m2:
-    st.markdown(
-        """
-        <div class="metric-card">
-            <h3>🧠 AI Extraction</h3>
-            <p class="small-text">Patient, symptoms, medicines.</p>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-with m3:
-    st.markdown(
-        """
-        <div class="metric-card">
-            <h3>🛡️ Safety Check</h3>
-            <p class="small-text">Dose validation using CSV.</p>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-
-st.divider()
-
-
-left_col, right_col = st.columns([1, 1.25], gap="large")
-
-
-with left_col:
-    st.header("🎙️ Doctor Recording")
-
-    audio_file = st.audio_input(
-        "Record voice prescription",
-        help="Click microphone, speak, then stop recording."
-    )
-
-    if audio_file:
-        st.audio(audio_file)
-
-        if st.button("🚀 Process Voice Note", type="primary", use_container_width=True):
-            try:
-                with st.status("Processing prescription...", expanded=True) as status:
-                    st.write("Saving audio...")
-                    audio_path = save_audio_file(audio_file)
-
-                    st.write("Transcribing voice...")
-                    transcript = transcribe_audio(audio_path)
-                    st.session_state.transcript = transcript
-
-                    st.write("Extracting prescription JSON...")
-                    extracted_json = extract_medical_json(transcript)
-
-                    st.write("Checking medicine safety...")
-                    validated_json = validate_medicines(extracted_json)
-                    st.session_state.medical_json = validated_json
-
-                    status.update(
-                        label="Prescription processed successfully!",
-                        state="complete",
-                        expanded=False
-                    )
-
-                st.success("Voice note processed successfully!")
-
-            except Exception as e:
-                st.error("Something went wrong.")
-                st.exception(e)
-
-    st.subheader("📝 Transcript")
-
-    if st.session_state.transcript:
-        st.info(st.session_state.transcript)
+# ─── Handle OAuth callback before anything else ───────────────────────────────
+code = st.query_params.get("code")
+if code:
+    with st.spinner("Signing you in…"):
+        ok, err_msg = handle_oauth_callback(code)
+    if ok:
+        st.rerun()          # Re-run so navigation switches to authenticated view
     else:
-        st.caption("Transcript will appear here after processing.")
+        st.error(f"❌ Authentication failed: {err_msg}")
+        st.info(
+            "Make sure `http://localhost:8501` is added as an "
+            "**Authorized Redirect URI** in Google Cloud Console → "
+            "Credentials → your OAuth client."
+        )
 
 
-with right_col:
-    st.header("📋 Extracted Prescription")
+# ─── Login page UI (shown when not authenticated) ────────────────────────────
+def login_page():
+    st.markdown(
+        """
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+        .stApp {
+            background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%);
+            min-height: 100vh;
+        }
+        [data-testid="stSidebarNav"],
+        section[data-testid="stSidebar"] { display: none !important; }
 
-    if st.session_state.medical_json is None:
-        st.info("Record and process a voice note to generate prescription data.")
+        .logo-ring {
+            width: 90px; height: 90px;
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+            border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 2.5rem;
+            margin: 0 auto 1.5rem;
+            box-shadow: 0 0 40px rgba(99,102,241,0.5);
+            animation: pulse 3s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { box-shadow: 0 0 40px rgba(99,102,241,0.5); }
+            50%       { box-shadow: 0 0 70px rgba(139,92,246,0.8); }
+        }
+        .login-card {
+            background: rgba(255,255,255,0.05);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 24px;
+            padding: 2.5rem 2rem;
+            max-width: 440px;
+            width: 100%;
+            margin: 3rem auto;
+            text-align: center;
+        }
+        .brand-title {
+            font-size: 2rem; font-weight: 700;
+            background: linear-gradient(135deg, #a5b4fc, #c4b5fd);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 0.25rem;
+        }
+        .brand-subtitle {
+            color: rgba(255,255,255,0.55);
+            font-size: 0.95rem;
+            margin-bottom: 2rem;
+        }
+        .feature-row {
+            display: flex; gap: 0.75rem;
+            margin-bottom: 2rem;
+            justify-content: center; flex-wrap: wrap;
+        }
+        .feature-chip {
+            background: rgba(99,102,241,0.15);
+            border: 1px solid rgba(99,102,241,0.3);
+            color: #a5b4fc;
+            border-radius: 20px;
+            padding: 0.35rem 0.85rem;
+            font-size: 0.78rem; font-weight: 500;
+        }
+        .footer-note {
+            color: rgba(255,255,255,0.3);
+            font-size: 0.75rem; margin-top: 1.5rem;
+        }
+        .stLinkButton a {
+            background: white !important;
+            color: #1f2937 !important;
+            border: none !important;
+            border-radius: 12px !important;
+            padding: 0.75rem 1.5rem !important;
+            font-weight: 600 !important;
+            font-size: 0.95rem !important;
+            width: 100% !important;
+            transition: all 0.2s ease !important;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3) !important;
+        }
+        .stLinkButton a:hover {
+            transform: translateY(-2px) !important;
+            box-shadow: 0 8px 25px rgba(0,0,0,0.4) !important;
+        }
+        .setup-warning {
+            background: rgba(239,68,68,0.1);
+            border: 1px solid rgba(239,68,68,0.3);
+            border-radius: 12px; padding: 1rem;
+            color: #fca5a5; font-size: 0.85rem;
+            text-align: left; margin-top: 0.5rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
+    st.markdown('<div class="login-card">', unsafe_allow_html=True)
+    st.markdown('<div class="logo-ring">🩺</div>', unsafe_allow_html=True)
+    st.markdown('<div class="brand-title">VoiceRx Sync</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="brand-subtitle">AI-powered clinical documentation for doctors</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        """
+        <div class="feature-row">
+            <span class="feature-chip">🎙️ Voice → Rx</span>
+            <span class="feature-chip">🏥 FHIR Ready</span>
+            <span class="feature-chip">📊 Analytics</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    auth_url = get_google_auth_url()
+
+    if auth_url:
+        st.link_button("🔵  Sign in with Google", auth_url, use_container_width=True)
+        st.markdown(
+            '<p class="footer-note">Sign in with your Google account.<br>'
+            "Your data is stored securely in MongoDB.</p>",
+            unsafe_allow_html=True,
+        )
     else:
-        data = st.session_state.medical_json
+        st.markdown(
+            """
+            <div class="setup-warning">
+                ⚠️ <strong>Setup Required</strong><br><br>
+                Add <code>GOOGLE_CLIENT_SECRET</code> to your <code>.env</code> file.<br>
+                Get it from Google Cloud Console → Credentials → your OAuth client.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-        with st.form("prescription_form"):
-            patient_name = st.text_input(
-                "Patient Name",
-                value=data.get("patient_name") or ""
-            )
+    st.markdown("</div>", unsafe_allow_html=True)
 
-            age = st.number_input(
-                "Age",
-                min_value=0,
-                max_value=120,
-                value=get_safe_age(data.get("age"))
-            )
 
-            diagnosis = st.text_input(
-                "Diagnosis",
-                value=data.get("diagnosis") or ""
-            )
+# ─── Register navigation based on auth state ─────────────────────────────────
+if is_authenticated():
+    pg = st.navigation(
+        {
+            "": [
+                st.Page("pages/1_Dashboard.py",        title="Dashboard",        icon="📊", default=True),
+                st.Page("pages/2_New_Consultation.py", title="New Consultation", icon="🎙️"),
+                st.Page("pages/3_All_Consultations.py",title="All Consultations",icon="📋"),
+            ]
+        },
+        position="hidden",   # We use custom sidebars inside each page
+    )
+else:
+    pg = st.navigation(
+        [st.Page(login_page, title="Login", icon="🔑")],
+        position="hidden",
+    )
 
-            symptoms_text = st.text_area(
-                "Symptoms",
-                value=", ".join(data.get("symptoms", []))
-            )
-
-            st.subheader("Medicines")
-
-            edited_medicines = []
-
-            medicines = data.get("medicines", [])
-
-            if not medicines:
-                st.warning("No medicines detected.")
-
-            for i, med in enumerate(medicines):
-                st.markdown(f"### Medicine {i + 1}")
-
-                c1, c2 = st.columns(2)
-
-                with c1:
-                    name = st.text_input(
-                        f"Medicine Name {i + 1}",
-                        value=med.get("name", ""),
-                        key=f"med_name_{i}"
-                    )
-
-                    dosage = st.text_input(
-                        f"Dosage {i + 1}",
-                        value=med.get("dosage", ""),
-                        key=f"med_dosage_{i}"
-                    )
-
-                with c2:
-                    frequency = st.text_input(
-                        f"Frequency {i + 1}",
-                        value=med.get("frequency", ""),
-                        key=f"med_frequency_{i}"
-                    )
-
-                    duration = st.text_input(
-                        f"Duration {i + 1}",
-                        value=med.get("duration", ""),
-                        key=f"med_duration_{i}"
-                    )
-
-                warning = med.get("warning", "")
-
-                if warning == "Validated":
-                    st.success("✅ Medicine dose validated")
-                else:
-                    st.warning(f"⚠️ {warning}")
-
-                edited_medicines.append(
-                    {
-                        "name": name,
-                        "dosage": dosage,
-                        "frequency": frequency,
-                        "duration": duration,
-                        "warning": warning,
-                    }
-                )
-
-            approved = st.checkbox("Doctor reviewed and approved")
-
-            submit = st.form_submit_button(
-                "💾 Save Final Prescription",
-                type="primary",
-                use_container_width=True
-            )
-
-            if submit:
-                final_data = {
-                    "patient_name": patient_name,
-                    "age": age,
-                    "diagnosis": diagnosis,
-                    "symptoms": [
-                        symptom.strip()
-                        for symptom in symptoms_text.split(",")
-                        if symptom.strip()
-                    ],
-                    "medicines": edited_medicines,
-                    "safety_warnings": data.get("safety_warnings", []),
-                    "doctor_approved": approved,
-                }
-
-                st.session_state.final_data = final_data
-                st.success("Final prescription saved.")
-
-        if st.session_state.final_data:
-            st.divider()
-
-            st.subheader("🧾 Final JSON")
-            st.json(st.session_state.final_data)
-
-            if not st.session_state.final_data.get("doctor_approved"):
-                st.warning("Doctor approval is required before syncing.")
-
-            sync_disabled = not st.session_state.final_data.get("doctor_approved")
-
-            if st.button(
-                "🟢 Sync to ABDM / ABHA Demo",
-                type="primary",
-                disabled=sync_disabled,
-                use_container_width=True
-            ):
-                fhir_json = build_fhir_prescription(st.session_state.final_data)
-                pdf_path = create_prescription_pdf(st.session_state.final_data)
-
-                st.session_state.fhir_json = fhir_json
-                st.session_state.pdf_path = pdf_path
-
-                print("FHIR-compatible ABDM-ready demo JSON:")
-                print(json.dumps(fhir_json, indent=2))
-
-                st.success("Prescription prepared successfully!")
-                st.balloons()
-
-            if st.session_state.fhir_json:
-                st.subheader("🏥 FHIR-style Demo Payload")
-                st.json(st.session_state.fhir_json)
-
-            if st.session_state.pdf_path:
-                with open(st.session_state.pdf_path, "rb") as pdf_file:
-                    st.download_button(
-                        "📄 Download Digital Prescription PDF",
-                        data=pdf_file,
-                        file_name="digital_prescription.pdf",
-                        mime="application/pdf",
-                        use_container_width=True
-                    )
+pg.run()
